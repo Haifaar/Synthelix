@@ -1,0 +1,1268 @@
+{
+  "name": "Synthelix Surge Co-pilot v3 (AI Agent + HITL) (This one works!!)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "8a450b64-d291-4f4f-8a63-6926300108e4",
+      "name": "⏰ Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -464,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://vtp-api.hospital.nhs.uk/v1/predictions/current",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Hospital-ID",
+              "value": "RWH-001"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "8a2f085f-fe3b-4211-b4e2-3a334cfa1250",
+      "name": "📡 Fetch VTP Predictions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -272,
+        416
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "2KTU4gaa28Bs9kY6",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "vtp-surge",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "0b6ad2de-35a1-4847-88e0-6cfb45611028",
+      "name": "🧪 Test Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -528,
+        848
+      ],
+      "webhookId": "0673c054-2658-442a-84f8-bd9e80702e11"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SYNTHELIX SURGE TIERING ENGINE\n// ============================================================\n// Calculates weighted patient load, capacity ratio, and tier.\n// Does NOT draft the SBAR — that's the AI Agent's job.\n// ============================================================\n\nconst CONFIG = {\n  staffed_capacity: 30,\n  resus_bays: 4,\n  green_threshold: 0.80,\n  amber_threshold: 0.90,\n  red_threshold: 1.10,\n  cat1_weight: 3.0,\n  cat2_weight: 2.0,\n  cat3_weight: 1.0,\n  cat4_weight: 0.5,\n  cat5_weight: 0.3,\n  resus_spike_threshold: 2,\n  forecast_window_hours: 4,\n};\n\nconst vtp = $input.first().json;\n\nconst predicted_arrivals = {\n  cat1: vtp.predicted_cat1 || 0,\n  cat2: vtp.predicted_cat2 || 0,\n  cat3: vtp.predicted_cat3 || 0,\n  cat4: vtp.predicted_cat4 || 0,\n  cat5: vtp.predicted_cat5 || 0,\n};\n\nconst current_occupancy_pct = vtp.current_occupancy_pct || 0;\nconst current_patients = vtp.current_patients || 0;\nconst departure_rate = vtp.predicted_departures || 0;\nconst timestamp = vtp.timestamp || new Date().toISOString();\n\nconst total_raw = predicted_arrivals.cat1 + predicted_arrivals.cat2 + predicted_arrivals.cat3 + predicted_arrivals.cat4 + predicted_arrivals.cat5;\nconst weighted_load = (predicted_arrivals.cat1 * CONFIG.cat1_weight) + (predicted_arrivals.cat2 * CONFIG.cat2_weight) + (predicted_arrivals.cat3 * CONFIG.cat3_weight) + (predicted_arrivals.cat4 * CONFIG.cat4_weight) + (predicted_arrivals.cat5 * CONFIG.cat5_weight);\nconst net_pressure = weighted_load - departure_rate;\nconst capacity_ratio = net_pressure / CONFIG.staffed_capacity;\nconst resus_spike = predicted_arrivals.cat1 >= CONFIG.resus_spike_threshold;\n\nlet surge_tier = 'NORMAL';\nlet surge_level = 0;\nlet tier_rationale = [];\n\nif (capacity_ratio >= CONFIG.red_threshold) {\n  surge_tier = 'RED'; surge_level = 3;\n  tier_rationale.push(`Capacity ratio ${(capacity_ratio*100).toFixed(0)}% exceeds RED threshold (${CONFIG.red_threshold*100}%)`);\n} else if (capacity_ratio >= CONFIG.amber_threshold) {\n  surge_tier = 'AMBER'; surge_level = 2;\n  tier_rationale.push(`Capacity ratio ${(capacity_ratio*100).toFixed(0)}% exceeds AMBER threshold (${CONFIG.amber_threshold*100}%)`);\n} else if (capacity_ratio >= CONFIG.green_threshold) {\n  surge_tier = 'GREEN'; surge_level = 1;\n  tier_rationale.push(`Capacity ratio ${(capacity_ratio*100).toFixed(0)}% exceeds GREEN threshold (${CONFIG.green_threshold*100}%)`);\n} else {\n  tier_rationale.push(`Capacity ratio ${(capacity_ratio*100).toFixed(0)}% within normal parameters`);\n}\n\nif (resus_spike && surge_level < 2) {\n  const prev = surge_tier;\n  surge_tier = 'AMBER'; surge_level = 2;\n  tier_rationale.push(`ESCALATED from ${prev}: ${predicted_arrivals.cat1} Cat 1 patients — resus spike (≥${CONFIG.resus_spike_threshold})`);\n}\nif (current_occupancy_pct > 85 && surge_level < 3) {\n  tier_rationale.push(`WARNING: ED occupancy ${current_occupancy_pct}% — reduced buffer`);\n}\n\nreturn [{\n  json: {\n    surge_tier, surge_level, tier_rationale, timestamp,\n    metrics: {\n      total_raw_arrivals: total_raw,\n      weighted_load: +weighted_load.toFixed(1),\n      net_pressure: +net_pressure.toFixed(1),\n      capacity_ratio_pct: +(capacity_ratio*100).toFixed(1),\n      current_occupancy_pct,\n      current_patients,\n      predicted_departures: departure_rate,\n      resus_spike,\n    },\n    predicted_arrivals,\n    config_snapshot: {\n      staffed_capacity: CONFIG.staffed_capacity,\n      green_pct: CONFIG.green_threshold*100,\n      amber_pct: CONFIG.amber_threshold*100,\n      red_pct: CONFIG.red_threshold*100,\n      window_hrs: CONFIG.forecast_window_hours,\n    },\n    requires_notification: surge_level >= 1,\n    requires_approval: surge_level >= 2,\n    requires_full_escalation: surge_level >= 3,\n  }\n}];"
+      },
+      "id": "5e19619e-7bef-4ca0-9afd-0290049c8447",
+      "name": "Surge Tiering Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        16,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.surge_tier }}",
+                    "rightValue": "NORMAL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "NORMAL"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.surge_tier }}",
+                    "rightValue": "GREEN",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "GREEN"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.surge_tier }}",
+                    "rightValue": "AMBER",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "AMBER"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.surge_tier }}",
+                    "rightValue": "RED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "RED"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7fab73b2-c3b7-4bb8-b9a8-5d72e6c94536",
+      "name": "Surge Level Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        288,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Audit: NORMAL tier — log only\nconst item = $input.first().json;\nconst now = new Date().toISOString();\nreturn [{ json: {\n  Timestamp:            now,\n  Event_ID:             $execution.id,\n  Event_Type:           'SURGE_DETECTED',\n  Surge_Level:          'NORMAL',\n  Capacity_Percentage:  item.metrics.capacity_ratio_pct,\n  Weighted_Patient_Load: item.metrics.weighted_load,\n  Cat1_Count:           item.predicted_arrivals.cat1,\n  Cat2_Count:           item.predicted_arrivals.cat2,\n  Cat3_Count:           item.predicted_arrivals.cat3,\n  Cat4_Count:           item.predicted_arrivals.cat4,\n  Cat5_Count:           item.predicted_arrivals.cat5,\n  SBAR_Generated:       false,\n  Approver_Name:        '',\n  Approver_Role:        '',\n  Action_Taken:         'N/A',\n  Action_Timestamp:     '',\n  Modification_Notes:   '',\n  Distribution_Status:  'N/A',\n  Recipients:           '',\n  Response_Time_Minutes: null,\n  Workflow_Version:     'v3.0',\n  System_Notes:         `Normal operations — capacity ratio ${item.metrics.capacity_ratio_pct}% — logged for audit only`,\n  Resus_Spike:          item.metrics.resus_spike,\n  Resus_Override:       false,\n  Execution_ID:         $execution.id,\n} }];"
+      },
+      "id": "da1d7eac-bd41-46b8-8887-a94f99c1cbe0",
+      "name": "Log Normal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Green Info Alert — awareness only, no approval needed\nconst item = $input.first().json;\nreturn [{\n  json: {\n    action: 'INFO_ALERT',\n    recipients: ['ED Charge Nurse'],\n    tier: 'GREEN',\n    headline: `Elevated: ${item.metrics.total_raw_arrivals} arrivals predicted (${item.metrics.capacity_ratio_pct}% capacity)`,\n    rationale: item.tier_rationale,\n    timestamp: item.timestamp,\n    ...item,\n    // Audit fields carried through for Update audit log node\n    Timestamp:            item.timestamp,\n    Event_ID:             $execution.id,\n    Event_Type:           'SURGE_DETECTED',\n    Surge_Level:          'GREEN',\n    Capacity_Percentage:  item.metrics.capacity_ratio_pct,\n    Weighted_Patient_Load: item.metrics.weighted_load,\n    Cat1_Count:           item.predicted_arrivals.cat1,\n    Cat2_Count:           item.predicted_arrivals.cat2,\n    Cat3_Count:           item.predicted_arrivals.cat3,\n    Cat4_Count:           item.predicted_arrivals.cat4,\n    Cat5_Count:           item.predicted_arrivals.cat5,\n    SBAR_Generated:       false,\n    Approver_Name:        '',\n    Approver_Role:        '',\n    Action_Taken:         'N/A',\n    Action_Timestamp:     '',\n    Modification_Notes:   '',\n    Distribution_Status:  'N/A',\n    Recipients:           'ED Charge Nurse',\n    Response_Time_Minutes: null,\n    Workflow_Version:     'v3.0',\n    System_Notes:         `GREEN awareness alert — ${item.metrics.total_raw_arrivals} arrivals predicted — ${item.metrics.capacity_ratio_pct}% capacity`,\n    Resus_Spike:          item.metrics.resus_spike,\n    Resus_Override:       false,\n    Execution_ID:         $execution.id,\n  }\n}];"
+      },
+      "id": "4912d305-4a04-42cc-98c2-e33902d7b40a",
+      "name": "Green Info Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Prepare the AI Agent prompt with all surge data ─────────\n// This node formats the surge data into a structured prompt\n// that the AI Agent will use to draft the SBAR briefing.\n\nconst item = $input.first().json;\nconst isRed = item.surge_tier === 'RED';\n\nconst agentPrompt = `You are the Synthelix Coordination Co-pilot. A surge has been detected in the Emergency Department.\n\nUsing the data below, draft a complete SBAR (Situation-Background-Assessment-Recommendation) clinical briefing for the ED Charge Nurse.\n\n--- SURGE DATA ---\nSurge Tier: ${item.surge_tier} (Level ${item.surge_level})\nTimestamp: ${item.timestamp}\nCapacity Ratio: ${item.metrics.capacity_ratio_pct}% of staffed capacity (${item.config_snapshot.staffed_capacity} patients)\n\nPredicted Arrivals (next ${item.config_snapshot.window_hrs} hours):\n- Cat 1 (Immediate/Resuscitation): ${item.predicted_arrivals.cat1}\n- Cat 2 (Very Urgent): ${item.predicted_arrivals.cat2}\n- Cat 3 (Urgent): ${item.predicted_arrivals.cat3}\n- Cat 4 (Standard): ${item.predicted_arrivals.cat4}\n- Cat 5 (Non-Urgent): ${item.predicted_arrivals.cat5}\n- Total raw arrivals: ${item.metrics.total_raw_arrivals}\n- Weighted capacity load: ${item.metrics.weighted_load}\n\nCurrent ED State:\n- Occupancy: ${item.metrics.current_occupancy_pct}% (${item.metrics.current_patients} patients currently in department)\n- Predicted departures in window: ${item.metrics.predicted_departures}\n- Net capacity pressure: ${item.metrics.net_pressure}\n- Resuscitation spike detected: ${item.metrics.resus_spike ? 'YES — ' + item.predicted_arrivals.cat1 + ' Cat 1 patients predicted' : 'No'}\n\nTiering Rationale: ${item.tier_rationale.join('; ')}\n\n--- INSTRUCTIONS ---\nDraft the SBAR using this exact structure:\n\n**SITUATION:** One paragraph. State the alert tier, when it was triggered, the headline numbers (total arrivals, weighted load vs capacity), and the urgency level. Be direct and clinical.\n\n**BACKGROUND:** One paragraph. Provide context: current ED occupancy, the acuity breakdown of predicted arrivals, departure rate, and any compounding factors (e.g., high occupancy reducing buffer, resus spike).\n\n**ASSESSMENT:** One paragraph. Explain WHY this tier was triggered. Reference the capacity ratio, any threshold breaches, and whether a resus spike contributed. State what the key risk is (e.g., \"resus bay saturation\", \"corridor care\", \"ambulance queuing\").\n\n**RECOMMENDATION:** A numbered list of specific, actionable steps appropriate for ${item.surge_tier} level. ${isRed ? 'This is a CRITICAL surge — include full escalation actions: elective cancellation, ambulance diversion consideration, overflow activation, and executive notification.' : 'Include preparation actions: ICU/bed management alerts, on-call standby, elective review, and discharge list review.'}\n${item.metrics.resus_spike ? 'IMPORTANT: Include a specific recommendation about securing resus bay availability and senior clinician cover for the predicted Cat 1 patients.' : ''}\n\nKeep the language clinical, concise, and NHS-appropriate. Do not use jargon the Charge Nurse wouldn't recognise. This will be sent as an official briefing for review and approval — mark it clearly as a DRAFT.\n\nEnd with: \"--- This SBAR was auto-drafted by Synthelix. All actions require Charge Nurse approval before execution. ---\"`;\n\nreturn [{\n  json: {\n    ...item,\n    agentPrompt,\n    approval_requested_at: new Date().toISOString(),\n  }\n}];"
+      },
+      "id": "bccc305d-9aa0-4af8-9533-d317f3006159",
+      "name": "Prepare Agent Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.agentPrompt }}",
+        "options": {
+          "systemMessage": "You are Synthelix, an AI-powered Coordination Co-pilot for NHS Emergency Departments. Your role is to draft structured SBAR clinical briefings based on predictive triage data from VitaSense Triage Pro (VTP).\n\nRules:\n1. You ONLY draft documents — you never execute clinical decisions.\n2. Every output must be clearly marked as a DRAFT requiring human approval.\n3. Use NHS clinical terminology accurately (Manchester Triage categories, SBAR format).\n4. Be specific with numbers — always reference the actual data provided.\n5. Recommendations must be actionable and appropriate to the surge level.\n6. Never downplay a threat or recommend inaction for AMBER/RED tiers.\n7. Maintain an audit-ready tone — everything you write may be reviewed by CQC.\n8. Keep each SBAR section to one focused paragraph (except Recommendation which is a numbered list).\n9. Include the surge tier, timestamp, and capacity ratio prominently.\n\nkeep concise with important information bolded for prompt action, recommendation should be in list form instead of a paragraph"
+        }
+      },
+      "id": "7fe04b53-47fc-4d46-833c-fa45316ea1b7",
+      "name": "🤖 AI Agent (SBAR Drafter)",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        928,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o"
+        },
+        "options": {
+          "maxTokens": 1500,
+          "temperature": 0.3
+        }
+      },
+      "id": "c9daf9da-6aa9-47b0-b54f-6d6bd3138159",
+      "name": "OpenAI GPT-4o",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        928,
+        752
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "5tCpH1QGhILA50MQ",
+          "name": "OpenAi account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Combine AI-drafted SBAR with surge data ─────────────────\n// The Agent outputs the SBAR text. We package it with the\n// original metrics for the approval email.\n\nconst agentOutput = $input.first().json;\nconst surgeData = $('Prepare Agent Prompt').first().json;\n\n// The agent's response contains the drafted SBAR\nconst sbar_drafted = agentOutput.output || agentOutput.text || 'SBAR draft unavailable — agent returned no output.';\n\nconst icon = surgeData.surge_tier === 'RED' ? '🔴' : '🟠';\nconst tierLabel = surgeData.surge_tier === 'RED' ? 'CRITICAL SURGE' : 'SURGE ALERT';\n\n// Build HTML email subject with surge tier and level\nconst emailSubject = `${icon} SYNTHELIX ${tierLabel} [${surgeData.surge_tier} - Level ${surgeData.surge_level}] — Approval Required`;\n\n// Convert the SBAR markdown-ish text to HTML paragraphs with proper formatting\nconst sbar_clean = sbar_drafted.replace(/\\*\\*DRAFT SBAR[^\\n]*\\*\\*\\n?/gi, '').trim();\nconst sbar_html = sbar_clean\n  .replace(/\\*\\*SITUATION:\\*\\*/gi, '<h3 style=\"color:#333;border-bottom:2px solid #eee;padding-bottom:8px;margin-top:16px;\">SITUATION</h3>')\n  .replace(/\\*\\*BACKGROUND:\\*\\*/gi, '<h3 style=\"color:#333;border-bottom:2px solid #eee;padding-bottom:8px;margin-top:16px;\">BACKGROUND</h3>')\n  .replace(/\\*\\*ASSESSMENT:\\*\\*/gi, '<h3 style=\"color:#333;border-bottom:2px solid #eee;padding-bottom:8px;margin-top:16px;\">ASSESSMENT</h3>')\n  .replace(/\\*\\*RECOMMENDATION:\\*\\*/gi, '<h3 style=\"color:#333;border-bottom:2px solid #eee;padding-bottom:8px;margin-top:16px;\">RECOMMENDATION</h3>')\n  .replace(/\\n\\n/g, '</p><p style=\"margin:8px 0;line-height:1.6;\">')\n  .replace(/\\n(\\d+\\.)/g, '<br>$1')\n  .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')\n  .replace(/\\n(?!\\n)/g, '<br>');\n\n// Build full HTML email body with complete SBAR report\nconst emailBody = `<html><body style=\"font-family:Arial,sans-serif;max-width:700px;margin:0 auto;\">\n  <div style=\"background:${surgeData.surge_tier === 'RED' ? '#D32F2F' : '#F57C00'};color:white;padding:16px 24px;border-radius:8px 8px 0 0;\">\n    <h2 style=\"margin:0;\">${icon} SYNTHELIX ${tierLabel}</h2>\n    <p style=\"margin:4px 0 0;opacity:0.9;\">Level ${surgeData.surge_level} | Capacity: ${surgeData.metrics.capacity_ratio_pct}% | ${new Date(surgeData.timestamp).toLocaleString('en-GB')}</p>\n  </div>\n  <div style=\"border:1px solid #ddd;border-top:none;padding:24px;border-radius:0 0 8px 8px;\">\n    <div style=\"background:#FFF3E0;border-left:4px solid #F57C00;padding:12px 16px;margin-bottom:20px;border-radius:0 4px 4px 0;\">\n      <strong>⚠️ This SBAR was drafted by the Synthelix AI Agent.</strong> Please review carefully before approving distribution.\n    </div>\n    <div style=\"background:#f9f9f9;padding:20px;border-radius:6px;margin-bottom:20px;\">\n      <p style=\"margin:8px 0;line-height:1.6;\">${sbar_html}</p>\n    </div>\n    <div style=\"background:#E3F2FD;border-left:4px solid #1976D2;padding:12px 16px;margin-bottom:20px;border-radius:0 4px 4px 0;\">\n      <strong>📝 Need to modify?</strong> Click <strong>Reject</strong> and reply to this email with your changes. The system will log your rejection and you can manually coordinate the response.\n    </div>\n    <p style=\"color:#999;font-size:12px;text-align:center;\">Synthelix AI Agent draft | Audit ID: ${$execution.id} | Config: capacity=${surgeData.config_snapshot.staffed_capacity}, amber=${surgeData.config_snapshot.amber_pct}%, red=${surgeData.config_snapshot.red_pct}%</p>\n  </div>\n</body></html>`;\n\nreturn [{\n  json: {\n    to: 'haifaalarafa@gmail.com',\n    subject: emailSubject,\n    html: emailBody,\n    // Store all surge data for merge node to access later\n    ...surgeData,\n    sbar_drafted,\n    execution_id: $execution.id,\n    approval_requested_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "8a33f043-276a-4fff-8ed6-7aa953f14f07",
+      "name": "Build Approval Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1312,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const waitData = $input.first().json;\nconst surgeData = $('Build Approval Email').first().json;\n\n// Gmail wait node returns 'approved' field (true/false)\nconst approved = waitData.data.approved;\nconst decision = approved === true ? 'APPROVED' : 'REJECTED';\n\nconst nurse_id = waitData.to || 'charge_nurse_01';\nconst decision_timestamp = new Date().toISOString();\n\nreturn [{\n  json: {\n    decision, \n    nurse_id, \n    decision_timestamp,\n    response_time_seconds: Math.round(\n      (new Date(decision_timestamp) - new Date(surgeData.approval_requested_at)) / 1000\n    ),\n    surge_tier: surgeData.surge_tier,\n    surge_level: surgeData.surge_level,\n    sbar_drafted: surgeData.sbar_drafted,\n    metrics: surgeData.metrics,\n    predicted_arrivals: surgeData.predicted_arrivals,\n    escalation_targets: surgeData.surge_level >= 3\n      ? ['Site Manager','Clinical Director','ICU Lead','Bed Management','Surgical Team Lead','Ambulance Liaison','On-Call Coordinator']\n      : ['ICU Lead','Bed Management','On-Call Coordinator'],\n    config_snapshot: surgeData.config_snapshot,\n    execution_id: surgeData.execution_id,\n    original_timestamp: surgeData.timestamp,\n  }\n}];"
+      },
+      "id": "7e97141a-c783-42a5-aca1-5dfb76b24616",
+      "name": "Merge Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "APPROVED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "0e85ee9d-f07e-4672-99d0-c72a04de43ce"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "APPROVED"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "MODIFY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "197b0b63-5568-474d-81a3-0e27a2bd2cf1"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "MODIFY"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "REJECTED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "77abc9b2-fa9f-4f34-9a56-9e96656343f2"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "REJECTED"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "37c5ef15-a980-49bb-a7c1-a6fbcd8819cf",
+      "name": "Decision Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2576,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── APPROVED: Build dept-specific distribution messages ──────\nconst item = $input.first().json;\nconst isRed = item.surge_level >= 3;\n\nconst distributions = item.escalation_targets.map(target => {\n  let action = '';\n  switch(target) {\n    case 'ICU Lead': action = `Expedite ${Math.min(item.predicted_arrivals.cat1+1,3)} discharges. Prepare for ED transfers. ${item.predicted_arrivals.cat1} Cat 1 patients predicted.`; break;\n    case 'Bed Management': action = `Occupancy ${item.metrics.current_occupancy_pct}%. ${item.metrics.total_raw_arrivals} arrivals predicted. Identify ${Math.ceil(item.metrics.total_raw_arrivals*0.3)} available beds.`; break;\n    case 'Surgical Team Lead': action = isRed ? 'Initiate elective cancellation. Postpone non-urgent cases first.' : 'Review elective list for potential postponements.'; break;\n    case 'On-Call Coordinator': action = isRed ? 'Activate all on-call staff. Deploy to ED + overflow.' : 'Place on-call on standby for early call-in within 30 mins.'; break;\n    case 'Site Manager': action = `Level ${item.surge_level} surge. ED at ${item.metrics.current_occupancy_pct}%. Charge Nurse approved full escalation.`; break;\n    case 'Clinical Director': action = `Critical surge Level ${item.surge_level}. Capacity ratio: ${item.metrics.capacity_ratio_pct}%. Full escalation approved.`; break;\n    case 'Ambulance Liaison': action = `ED at/exceeding capacity. Consider diversion for non-critical. Occupancy: ${item.metrics.current_occupancy_pct}%. Cat 1 predicted: ${item.predicted_arrivals.cat1}.`; break;\n    default: action = `Surge Level ${item.surge_level} active. Await instructions.`;\n  }\n  return { recipient: target, action, priority: isRed ? 'CRITICAL' : 'HIGH' };\n});\n\nreturn [{ json: {\n  action: 'DISTRIBUTE_APPROVED',\n  approved_by: item.nurse_id, approved_at: item.decision_timestamp,\n  response_time_seconds: item.response_time_seconds,\n  surge_tier: item.surge_tier, surge_level: item.surge_level,\n  sbar_drafted: item.sbar_drafted,\n  distributions,\n  audit: {\n    execution_id: item.execution_id, surge_detected_at: item.original_timestamp,\n    decision: 'APPROVED', approved_by: item.nurse_id, approved_at: item.decision_timestamp,\n    response_time_seconds: item.response_time_seconds,\n    tier: item.surge_tier, config: item.config_snapshot,\n    distributions_count: distributions.length,\n  }\n} }];"
+      },
+      "id": "9e523d88-67bb-4719-9259-9eecc78603fb",
+      "name": "✅ Build Distribution Pack",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2832,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flag for Modification — Charge Nurse requested edits to SBAR\nconst item = $input.first().json;\nconst now = new Date().toISOString();\nconst resp_sec = item.response_time_seconds || 0;\nreturn [{ json: {\n  Timestamp:            now,\n  Event_ID:             item.execution_id || $execution.id,\n  Event_Type:           'APPROVAL_RECEIVED',\n  Surge_Level:          item.surge_tier,\n  Capacity_Percentage:  item.metrics ? item.metrics.capacity_ratio_pct : '',\n  Weighted_Patient_Load: item.metrics ? item.metrics.weighted_load : '',\n  Cat1_Count:           item.predicted_arrivals ? item.predicted_arrivals.cat1 : '',\n  Cat2_Count:           item.predicted_arrivals ? item.predicted_arrivals.cat2 : '',\n  Cat3_Count:           item.predicted_arrivals ? item.predicted_arrivals.cat3 : '',\n  Cat4_Count:           item.predicted_arrivals ? item.predicted_arrivals.cat4 : '',\n  Cat5_Count:           item.predicted_arrivals ? item.predicted_arrivals.cat5 : '',\n  SBAR_Generated:       true,\n  Approver_Name:        item.nurse_id || '',\n  Approver_Role:        'ED Charge Nurse',\n  Action_Taken:         'MODIFIED',\n  Action_Timestamp:     item.decision_timestamp || now,\n  Modification_Notes:   'Charge Nurse requested modifications to AI-drafted SBAR before distribution',\n  Distribution_Status:  'PENDING',\n  Recipients:           '',\n  Response_Time_Minutes: +(resp_sec / 60).toFixed(2),\n  Workflow_Version:     'v3.0',\n  System_Notes:         `SBAR flagged for modification by Charge Nurse — distribution paused pending review`,\n  Resus_Spike:          item.metrics && item.metrics.resus_spike ? true : false,\n  Resus_Override:       false,\n  Execution_ID:         item.execution_id || $execution.id,\n} }];"
+      },
+      "id": "0712ee0a-2e1c-40ca-8dc5-efb4f8be509c",
+      "name": "✏️ Flag for Modification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2832,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Stand Down — Charge Nurse rejected the SBAR\nconst item = $input.first().json;\nconst now = new Date().toISOString();\nconst resp_sec = item.response_time_seconds || 0;\nreturn [{ json: {\n  Timestamp:            now,\n  Event_ID:             item.execution_id || $execution.id,\n  Event_Type:           'ESCALATION_CANCELLED',\n  Surge_Level:          item.surge_tier,\n  Capacity_Percentage:  item.metrics ? item.metrics.capacity_ratio_pct : '',\n  Weighted_Patient_Load: item.metrics ? item.metrics.weighted_load : '',\n  Cat1_Count:           item.predicted_arrivals ? item.predicted_arrivals.cat1 : '',\n  Cat2_Count:           item.predicted_arrivals ? item.predicted_arrivals.cat2 : '',\n  Cat3_Count:           item.predicted_arrivals ? item.predicted_arrivals.cat3 : '',\n  Cat4_Count:           item.predicted_arrivals ? item.predicted_arrivals.cat4 : '',\n  Cat5_Count:           item.predicted_arrivals ? item.predicted_arrivals.cat5 : '',\n  SBAR_Generated:       true,\n  Approver_Name:        item.nurse_id || '',\n  Approver_Role:        'ED Charge Nurse',\n  Action_Taken:         'REJECTED',\n  Action_Timestamp:     item.decision_timestamp || now,\n  Modification_Notes:   '',\n  Distribution_Status:  'CANCELLED',\n  Recipients:           '',\n  Response_Time_Minutes: +(resp_sec / 60).toFixed(2),\n  Workflow_Version:     'v3.0',\n  System_Notes:         `Surge alert [${item.surge_tier}] stood down by Charge Nurse. Clinical judgement overrides AI assessment. System continues monitoring.`,\n  Resus_Spike:          item.metrics && item.metrics.resus_spike ? true : false,\n  Resus_Override:       false,\n  Execution_ID:         item.execution_id || $execution.id,\n} }];"
+      },
+      "id": "ff5cb3c3-cb0e-41fd-bb41-f3d903631fa3",
+      "name": "❌ Stand Down",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2832,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/1bUHCWYPPsCX7_PqcbccvnqQhOir49GJqLuhsTmkHpd4/edit?usp=sharing",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 782096253,
+          "mode": "list",
+          "cachedResultName": "Audit Log",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bUHCWYPPsCX7_PqcbccvnqQhOir49GJqLuhsTmkHpd4/edit#gid=782096253"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "Event_ID"
+          ],
+          "schema": [
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Event_ID",
+              "displayName": "Event_ID",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Event_Type",
+              "displayName": "Event_Type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Surge_Level",
+              "displayName": "Surge_Level",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Capacity_Percentage",
+              "displayName": "Capacity_Percentage",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Weighted_Patient_Load",
+              "displayName": "Weighted_Patient_Load",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Cat1_Count",
+              "displayName": "Cat1_Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Cat2_Count",
+              "displayName": "Cat2_Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Cat3_Count",
+              "displayName": "Cat3_Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Cat4_Count",
+              "displayName": "Cat4_Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Cat5_Count",
+              "displayName": "Cat5_Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "SBAR_Generated",
+              "displayName": "SBAR_Generated",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Approver_Name",
+              "displayName": "Approver_Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Approver_Role",
+              "displayName": "Approver_Role",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Action_Taken",
+              "displayName": "Action_Taken",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Action_Timestamp",
+              "displayName": "Action_Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Modification_Notes",
+              "displayName": "Modification_Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Distribution_Status",
+              "displayName": "Distribution_Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Recipients",
+              "displayName": "Recipients",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Response_Time_Minutes",
+              "displayName": "Response_Time_Minutes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Workflow_Version",
+              "displayName": "Workflow_Version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "System_Notes",
+              "displayName": "System_Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Resus_Spike",
+              "displayName": "Resus_Spike",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Resus_Override",
+              "displayName": "Resus_Override",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Execution_ID",
+              "displayName": "Execution_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3552,
+        144
+      ],
+      "id": "2ca2d3cb-5366-43c6-9754-ef184806ef18",
+      "name": "Update audit log",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "y6ry66iu3YSnhXUF",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "sendAndWait",
+        "sendTo": "haifaalarafa@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "approvalOptions": {
+          "values": {
+            "approvalType": "double"
+          }
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1600,
+        544
+      ],
+      "id": "bc37c081-77fd-4d45-a7f4-4cac0c6dbd51",
+      "name": "Send message and wait for response",
+      "webhookId": "f569bf5d-0f80-4bdd-9436-bd2fe9a6b1a8",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "K23rVqh7cEXFfhgf",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.surge_tier }}",
+                    "rightValue": "AMBER",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "997066d3-0a5f-41fb-a562-326bfff1b70c"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "AMBER"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.surge_tier }}",
+                    "rightValue": "RED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "01370303-5c93-4514-9d2a-ddf6e5ae80dc"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "RED"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b85dd92d-1c76-45a3-91f3-4b4b8de26811",
+      "name": "🚦 Escalation Tier Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        3072,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── AMBER Pathway: Build individual targeted emails ──────────\n// Recipients: ICU Lead, Bed Management, On-Call Coordinator\nconst item = $input.first().json;\nconst m = item.metrics || {};\nconst p = item.predicted_arrivals || {};\nconst approvedAt = item.approved_at ? new Date(item.approved_at).toLocaleString('en-GB') : new Date().toLocaleString('en-GB');\nconst auditId = item.audit ? item.audit.execution_id : 'N/A';\n\nconst emailDirectory = {\n  'ICU Lead': 'icu.lead@rwh.nhs.uk',\n  'Bed Management': 'bed.management@rwh.nhs.uk',\n  'On-Call Coordinator': 'oncall.coordinator@rwh.nhs.uk',\n};\n\nconst items = item.distributions.map(d => {\n  const recipientEmail = emailDirectory[d.recipient] || 'haifaalarafa@gmail.com';\n\n  const emailHtml = '<html><body style=\"font-family:Arial,sans-serif;max-width:700px;margin:0 auto;padding:0;background:#f4f4f4;\">'\n    + '<div style=\"background:#F57C00;color:white;padding:20px 28px;border-radius:8px 8px 0 0;\">'\n    + '<h2 style=\"margin:0;font-size:20px;letter-spacing:0.5px;\">&#x1F7E0; SYNTHELIX SURGE ALERT &#x2014; AMBER</h2>'\n    + '<p style=\"margin:6px 0 0;opacity:0.9;font-size:13px;\">Level 2 | Capacity: ' + (m.capacity_ratio_pct || 'N/A') + '% | ' + approvedAt + '</p>'\n    + '</div>'\n\n    + '<div style=\"background:white;border:1px solid #ddd;border-top:none;padding:28px;border-radius:0 0 8px 8px;\">'\n\n    // Action box\n    + '<div style=\"background:#FFF3E0;border-left:5px solid #F57C00;padding:18px 20px;margin-bottom:24px;border-radius:0 6px 6px 0;\">'\n    + '<p style=\"margin:0 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#E65100;font-weight:bold;\">Action Required</p>'\n    + '<h3 style=\"margin:0 0 10px;color:#BF360C;font-size:18px;\">' + d.recipient + '</h3>'\n    + '<p style=\"margin:0;font-size:15px;line-height:1.7;color:#333;\">' + d.action + '</p>'\n    + '</div>'\n\n    // Metrics table\n    + '<table style=\"width:100%;border-collapse:collapse;font-size:14px;margin-bottom:24px;\">'\n    + '<tr style=\"background:#F57C00;color:white;\"><td colspan=\"2\" style=\"padding:10px 14px;font-weight:bold;font-size:13px;text-transform:uppercase;letter-spacing:0.5px;border-radius:4px 4px 0 0;\">Key Metrics</td></tr>'\n    + '<tr style=\"background:#FFF8E1;\"><td style=\"padding:10px 14px;color:#555;border-bottom:1px solid #FFE0B2;\">Predicted Arrivals</td><td style=\"padding:10px 14px;font-weight:bold;border-bottom:1px solid #FFE0B2;\">' + (m.total_raw_arrivals || 0) + ' total (Weighted load: ' + (m.weighted_load || 0) + ')</td></tr>'\n    + '<tr><td style=\"padding:10px 14px;color:#555;border-bottom:1px solid #f0f0f0;\">Cat 1 &#x2014; Resuscitation</td><td style=\"padding:10px 14px;font-weight:bold;border-bottom:1px solid #f0f0f0;\">' + (p.cat1 || 0) + '</td></tr>'\n    + '<tr style=\"background:#fafafa;\"><td style=\"padding:10px 14px;color:#555;border-bottom:1px solid #f0f0f0;\">Cat 2 &#x2014; Very Urgent</td><td style=\"padding:10px 14px;font-weight:bold;border-bottom:1px solid #f0f0f0;\">' + (p.cat2 || 0) + '</td></tr>'\n    + '<tr><td style=\"padding:10px 14px;color:#555;border-bottom:1px solid #f0f0f0;\">Current ED Occupancy</td><td style=\"padding:10px 14px;font-weight:bold;border-bottom:1px solid #f0f0f0;\">' + (m.current_occupancy_pct || 0) + '%</td></tr>'\n    + '<tr style=\"background:#FFF3E0;\"><td style=\"padding:10px 14px;color:#555;\">Priority Level</td><td style=\"padding:10px 14px;font-weight:bold;color:#F57C00;font-size:15px;\">' + d.priority + '</td></tr>'\n    + '</table>'\n\n    // Approval stamp\n    + '<div style=\"background:#E8F5E9;border-left:4px solid #4CAF50;padding:12px 16px;margin-bottom:20px;border-radius:0 4px 4px 0;\">'\n    + '<p style=\"margin:0;font-size:13px;color:#2E7D32;\">&#x2705; <strong>Approved by:</strong> ' + (item.approved_by || 'ED Charge Nurse') + ' at ' + approvedAt + '</p>'\n    + '</div>'\n\n    // Footer\n    + '<p style=\"color:#aaa;font-size:11px;text-align:center;margin:0;padding-top:12px;border-top:1px solid #eee;\">Synthelix Surge Co-pilot v3 | Audit ID: ' + auditId + ' | Escalation approved by ED Charge Nurse before distribution</p>'\n    + '</div>'\n    + '</body></html>';\n\n  return {\n    json: {\n      to: recipientEmail,\n      subject: '\\u{1F7E0} SURGE ALERT [AMBER] \\u2014 Action Required: ' + d.recipient,\n      html: emailHtml,\n      recipient_role: d.recipient,\n      action: d.action,\n      priority: d.priority,\n      surge_tier: 'AMBER',\n    }\n  };\n});\n\nreturn items;"
+      },
+      "id": "aa68fc6e-cd9d-4501-b226-be4aa1279387",
+      "name": "🟠 AMBER Distribution Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3312,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── RED Pathway: Build individual targeted emails ────────────\n// Recipients: Full 7-role escalation chain\n// Senior leadership (Site Manager, Clinical Director) receive the full SBAR\nconst item = $input.first().json;\nconst m = item.metrics || {};\nconst p = item.predicted_arrivals || {};\nconst sbarRaw = item.sbar_drafted || '';\nconst approvedAt = item.approved_at ? new Date(item.approved_at).toLocaleString('en-GB') : new Date().toLocaleString('en-GB');\nconst auditId = item.audit ? item.audit.execution_id : 'N/A';\n\n// Convert SBAR markdown to clean HTML (same approach as Build Approval Email)\nconst sbarRaw2 = sbarRaw.replace(/\\*\\*DRAFT SBAR[^\\n]*\\*\\*\\n?/gi, '').trim();\nconst sbarHtml = sbarRaw2\n  .replace(/\\*\\*SITUATION:\\*\\*/gi, '<h4 style=\"color:#B71C1C;border-bottom:2px solid #FFCDD2;padding-bottom:6px;margin:16px 0 8px;\">SITUATION</h4>')\n  .replace(/\\*\\*BACKGROUND:\\*\\*/gi, '<h4 style=\"color:#B71C1C;border-bottom:2px solid #FFCDD2;padding-bottom:6px;margin:16px 0 8px;\">BACKGROUND</h4>')\n  .replace(/\\*\\*ASSESSMENT:\\*\\*/gi, '<h4 style=\"color:#B71C1C;border-bottom:2px solid #FFCDD2;padding-bottom:6px;margin:16px 0 8px;\">ASSESSMENT</h4>')\n  .replace(/\\*\\*RECOMMENDATION:\\*\\*/gi, '<h4 style=\"color:#B71C1C;border-bottom:2px solid #FFCDD2;padding-bottom:6px;margin:16px 0 8px;\">RECOMMENDATION</h4>')\n  .replace(/\\n\\n/g, '</p><p style=\"margin:6px 0;line-height:1.6;font-size:13px;color:#333;\">')\n  .replace(/\\n(\\d+\\.)/g, '<br>$1')\n  .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')\n  .replace(/\\n(?!\\n)/g, '<br>');\n\nconst emailDirectory = {\n  'Site Manager': 'site.manager@rwh.nhs.uk',\n  'Clinical Director': 'clinical.director@rwh.nhs.uk',\n  'ICU Lead': 'icu.lead@rwh.nhs.uk',\n  'Bed Management': 'bed.management@rwh.nhs.uk',\n  'Surgical Team Lead': 'surgical.lead@rwh.nhs.uk',\n  'Ambulance Liaison': 'ambulance.liaison@rwh.nhs.uk',\n  'On-Call Coordinator': 'oncall.coordinator@rwh.nhs.uk',\n};\n\nconst items = item.distributions.map(d => {\n  const recipientEmail = emailDirectory[d.recipient] || 'haifaalarafa@gmail.com';\n  const isSenior = ['Site Manager', 'Clinical Director'].includes(d.recipient);\n\n  // SBAR section only for senior leadership\n  let sbarSection = '';\n  if (isSenior && sbarRaw) {\n    sbarSection = '<div style=\"background:#FFF5F5;border:1px solid #FFCDD2;border-radius:6px;padding:20px;margin-bottom:24px;\">'\n      + '<p style=\"margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#B71C1C;font-weight:bold;\">&#x1F4C4; Approved SBAR Briefing</p>'\n      + '<p style=\"margin:6px 0;line-height:1.6;font-size:13px;color:#333;\">' + sbarHtml + '</p>'\n      + '</div>';\n  }\n\n  const emailHtml = '<html><body style=\"font-family:Arial,sans-serif;max-width:700px;margin:0 auto;padding:0;background:#f4f4f4;\">'\n    + '<div style=\"background:#D32F2F;color:white;padding:20px 28px;border-radius:8px 8px 0 0;\">'\n    + '<h2 style=\"margin:0;font-size:20px;letter-spacing:0.5px;\">&#x1F534; SYNTHELIX CRITICAL SURGE &#x2014; RED</h2>'\n    + '<p style=\"margin:6px 0 0;opacity:0.9;font-size:13px;\">Level 3 &#x2014; FULL ESCALATION | Capacity: ' + (m.capacity_ratio_pct || 'N/A') + '% | ' + approvedAt + '</p>'\n    + '</div>'\n\n    + '<div style=\"background:white;border:1px solid #ddd;border-top:none;padding:28px;border-radius:0 0 8px 8px;\">'\n\n    // Urgency banner\n    + '<div style=\"background:#FFEBEE;border:2px solid #D32F2F;padding:14px 18px;margin-bottom:24px;border-radius:6px;text-align:center;\">'\n    + '<p style=\"margin:0;font-size:14px;font-weight:bold;color:#B71C1C;\">&#x1F6A8; THIS IS A CRITICAL ESCALATION &#x2014; IMMEDIATE RESPONSE REQUIRED</p>'\n    + '</div>'\n\n    // Action box\n    + '<div style=\"background:#FFEBEE;border-left:5px solid #D32F2F;padding:18px 20px;margin-bottom:24px;border-radius:0 6px 6px 0;\">'\n    + '<p style=\"margin:0 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#C62828;font-weight:bold;\">Immediate Action Required</p>'\n    + '<h3 style=\"margin:0 0 10px;color:#B71C1C;font-size:18px;\">' + d.recipient + '</h3>'\n    + '<p style=\"margin:0;font-size:15px;line-height:1.7;color:#333;font-weight:600;\">' + d.action + '</p>'\n    + '</div>'\n\n    // SBAR (senior leadership only)\n    + sbarSection\n\n    // Metrics table\n    + '<table style=\"width:100%;border-collapse:collapse;font-size:14px;margin-bottom:24px;\">'\n    + '<tr style=\"background:#D32F2F;color:white;\"><td colspan=\"2\" style=\"padding:10px 14px;font-weight:bold;font-size:13px;text-transform:uppercase;letter-spacing:0.5px;border-radius:4px 4px 0 0;\">Critical Metrics</td></tr>'\n    + '<tr style=\"background:#FFEBEE;\"><td style=\"padding:10px 14px;color:#555;border-bottom:1px solid #FFCDD2;\">Predicted Arrivals</td><td style=\"padding:10px 14px;font-weight:bold;border-bottom:1px solid #FFCDD2;\">' + (m.total_raw_arrivals || 0) + ' total (Weighted load: ' + (m.weighted_load || 0) + ')</td></tr>'\n    + '<tr><td style=\"padding:10px 14px;color:#555;border-bottom:1px solid #f0f0f0;\">Cat 1 &#x2014; Resuscitation</td><td style=\"padding:10px 14px;font-weight:bold;color:#D32F2F;border-bottom:1px solid #f0f0f0;\">' + (p.cat1 || 0) + '</td></tr>'\n    + '<tr style=\"background:#fafafa;\"><td style=\"padding:10px 14px;color:#555;border-bottom:1px solid #f0f0f0;\">Cat 2 &#x2014; Very Urgent</td><td style=\"padding:10px 14px;font-weight:bold;color:#D32F2F;border-bottom:1px solid #f0f0f0;\">' + (p.cat2 || 0) + '</td></tr>'\n    + '<tr><td style=\"padding:10px 14px;color:#555;border-bottom:1px solid #f0f0f0;\">Current ED Occupancy</td><td style=\"padding:10px 14px;font-weight:bold;color:#D32F2F;border-bottom:1px solid #f0f0f0;\">' + (m.current_occupancy_pct || 0) + '%</td></tr>'\n    + '<tr style=\"background:#fafafa;\"><td style=\"padding:10px 14px;color:#555;border-bottom:1px solid #f0f0f0;\">Resuscitation Spike</td><td style=\"padding:10px 14px;font-weight:bold;color:#D32F2F;border-bottom:1px solid #f0f0f0;\">' + (m.resus_spike ? '&#x26A0;&#xFE0F; YES' : 'No') + '</td></tr>'\n    + '<tr style=\"background:#FFEBEE;\"><td style=\"padding:10px 14px;color:#555;\">Priority Level</td><td style=\"padding:10px 14px;font-weight:bold;color:#D32F2F;font-size:15px;\">' + d.priority + '</td></tr>'\n    + '</table>'\n\n    // Approval stamp\n    + '<div style=\"background:#E8F5E9;border-left:4px solid #4CAF50;padding:12px 16px;margin-bottom:20px;border-radius:0 4px 4px 0;\">'\n    + '<p style=\"margin:0;font-size:13px;color:#2E7D32;\">&#x2705; <strong>Approved by:</strong> ' + (item.approved_by || 'ED Charge Nurse') + ' at ' + approvedAt + '</p>'\n    + '</div>'\n\n    // Footer\n    + '<p style=\"color:#aaa;font-size:11px;text-align:center;margin:0;padding-top:12px;border-top:1px solid #eee;\">Synthelix Surge Co-pilot v3 | Audit ID: ' + auditId + ' | CRITICAL escalation approved by ED Charge Nurse before distribution</p>'\n    + '</div>'\n    + '</body></html>';\n\n  return {\n    json: {\n      to: recipientEmail,\n      subject: '\\u{1F534} CRITICAL SURGE [RED] \\u2014 IMMEDIATE Action: ' + d.recipient,\n      html: emailHtml,\n      recipient_role: d.recipient,\n      action: d.action,\n      priority: d.priority,\n      surge_tier: 'RED',\n      includes_sbar: isSenior,\n    }\n  };\n});\n\nreturn items;"
+      },
+      "id": "1c45eb04-1a01-4bc1-92a0-30ea3caea63c",
+      "name": "🔴 RED Distribution Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3312,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "=haifaalarafa@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7d19696f-c10c-42b6-bf8d-c5c196bf5cc0",
+      "name": "📧 Send AMBER Alerts",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        3552,
+        272
+      ],
+      "webhookId": "73b0cd4e-8ad6-4fad-b9f8-92dd4d68ae8d",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "K23rVqh7cEXFfhgf",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "=haifaalarafa@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "abbb3d56-4b89-466d-9e2c-a8c7a77951bd",
+      "name": "📧 Send RED Alerts",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        3552,
+        528
+      ],
+      "webhookId": "dfa6e786-cbd8-4553-afa5-f8ca21b3760e",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "K23rVqh7cEXFfhgf",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// AMBER Audit Entry — distribution complete\nconst items = $input.all();\nconst recipients = items.map(i => i.json.recipient_role).join(', ');\nconst now = new Date().toISOString();\nconst ctx = items[0].json;\nconst resp_sec = ctx.response_time_seconds || 0;\nconst isOverride = ctx.metrics && ctx.metrics.resus_spike && ctx.surge_level === 2;\nreturn [{ json: {\n  Timestamp:            now,\n  Event_ID:             ctx.execution_id || $execution.id,\n  Event_Type:           'ESCALATION_DISTRIBUTED',\n  Surge_Level:          'AMBER',\n  Capacity_Percentage:  ctx.metrics ? ctx.metrics.capacity_ratio_pct : '',\n  Weighted_Patient_Load: ctx.metrics ? ctx.metrics.weighted_load : '',\n  Cat1_Count:           ctx.predicted_arrivals ? ctx.predicted_arrivals.cat1 : '',\n  Cat2_Count:           ctx.predicted_arrivals ? ctx.predicted_arrivals.cat2 : '',\n  Cat3_Count:           ctx.predicted_arrivals ? ctx.predicted_arrivals.cat3 : '',\n  Cat4_Count:           ctx.predicted_arrivals ? ctx.predicted_arrivals.cat4 : '',\n  Cat5_Count:           ctx.predicted_arrivals ? ctx.predicted_arrivals.cat5 : '',\n  SBAR_Generated:       true,\n  Approver_Name:        ctx.nurse_id || '',\n  Approver_Role:        'ED Charge Nurse',\n  Action_Taken:         ctx.decision || 'APPROVED',\n  Action_Timestamp:     ctx.decision_timestamp || now,\n  Modification_Notes:   '',\n  Distribution_Status:  'COMPLETED',\n  Recipients:           recipients,\n  Response_Time_Minutes: +(resp_sec / 60).toFixed(2),\n  Workflow_Version:     'v3.0',\n  System_Notes:         `AMBER escalation distributed to ${items.length} recipients: ${recipients}`,\n  Resus_Spike:          ctx.metrics && ctx.metrics.resus_spike ? true : false,\n  Resus_Override:       isOverride ? true : false,\n  Execution_ID:         ctx.execution_id || $execution.id,\n} }];"
+      },
+      "id": "870fbe3b-3589-40be-93bf-b5d7efd8e98d",
+      "name": "🟠 AMBER Audit Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3792,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// RED Audit Entry — critical distribution complete\nconst items = $input.all();\nconst recipients = items.map(i => i.json.recipient_role).join(', ');\nconst sbarRecipients = items.filter(i => i.json.includes_sbar).map(i => i.json.recipient_role).join(', ');\nconst now = new Date().toISOString();\nconst ctx = items[0].json;\nconst resp_sec = ctx.response_time_seconds || 0;\nreturn [{ json: {\n  Timestamp:            now,\n  Event_ID:             ctx.execution_id || $execution.id,\n  Event_Type:           'ESCALATION_DISTRIBUTED',\n  Surge_Level:          'RED',\n  Capacity_Percentage:  ctx.metrics ? ctx.metrics.capacity_ratio_pct : '',\n  Weighted_Patient_Load: ctx.metrics ? ctx.metrics.weighted_load : '',\n  Cat1_Count:           ctx.predicted_arrivals ? ctx.predicted_arrivals.cat1 : '',\n  Cat2_Count:           ctx.predicted_arrivals ? ctx.predicted_arrivals.cat2 : '',\n  Cat3_Count:           ctx.predicted_arrivals ? ctx.predicted_arrivals.cat3 : '',\n  Cat4_Count:           ctx.predicted_arrivals ? ctx.predicted_arrivals.cat4 : '',\n  Cat5_Count:           ctx.predicted_arrivals ? ctx.predicted_arrivals.cat5 : '',\n  SBAR_Generated:       true,\n  Approver_Name:        ctx.nurse_id || '',\n  Approver_Role:        'ED Charge Nurse',\n  Action_Taken:         ctx.decision || 'APPROVED',\n  Action_Timestamp:     ctx.decision_timestamp || now,\n  Modification_Notes:   '',\n  Distribution_Status:  'COMPLETED',\n  Recipients:           recipients,\n  Response_Time_Minutes: +(resp_sec / 60).toFixed(2),\n  Workflow_Version:     'v3.0',\n  System_Notes:         `RED CRITICAL escalation distributed to ${items.length} recipients: ${recipients}` + (sbarRecipients ? `. Full SBAR sent to: ${sbarRecipients}` : ''),\n  Resus_Spike:          ctx.metrics && ctx.metrics.resus_spike ? true : false,\n  Resus_Override:       false,\n  Execution_ID:         ctx.execution_id || $execution.id,\n} }];"
+      },
+      "id": "fa50f1cf-0248-4b36-9216-31bd7e715e84",
+      "name": "🔴 RED Audit Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3792,
+        528
+      ]
+    }
+  ],
+  "pinData": {
+    "📡 Fetch VTP Predictions": [
+      {
+        "json": {
+          "timestamp": "2026-02-07T14:30:00Z",
+          "source": "VitaSense_Triage_Pro",
+          "hospital_id": "RWH-001",
+          "predicted_cat1": 2,
+          "predicted_cat2": 6,
+          "predicted_cat3": 14,
+          "predicted_cat4": 5,
+          "predicted_cat5": 2,
+          "predicted_departures": 8,
+          "current_occupancy_pct": 82,
+          "current_patients": 25
+        }
+      }
+    ],
+    "🧪 Test Webhook": [
+      {
+        "json": {
+          "timestamp": "2026-02-07T20:00:00Z",
+          "source": "VitaSense_Triage_Pro",
+          "hospital_id": "RWH-001",
+          "predicted_cat1": 0,
+          "predicted_cat2": 2,
+          "predicted_cat3": 8,
+          "predicted_cat4": 5,
+          "predicted_cat5": 3,
+          "predicted_departures": 12,
+          "current_occupancy_pct": 45,
+          "current_patients": 14
+        }
+      }
+    ]
+  },
+  "connections": {
+    "⏰ Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "📡 Fetch VTP Predictions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📡 Fetch VTP Predictions": {
+      "main": [
+        [
+          {
+            "node": "Surge Tiering Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧪 Test Webhook": {
+      "main": [
+        [
+          {
+            "node": "Surge Tiering Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Surge Tiering Engine": {
+      "main": [
+        [
+          {
+            "node": "Surge Level Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Surge Level Router": {
+      "main": [
+        [
+          {
+            "node": "Log Normal",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Green Info Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Agent Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Agent Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Agent Prompt": {
+      "main": [
+        [
+          {
+            "node": "🤖 AI Agent (SBAR Drafter)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🤖 AI Agent (SBAR Drafter)": {
+      "main": [
+        [
+          {
+            "node": "Build Approval Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI GPT-4o": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "🤖 AI Agent (SBAR Drafter)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Decision": {
+      "main": [
+        [
+          {
+            "node": "Decision Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision Router": {
+      "main": [
+        [
+          {
+            "node": "✅ Build Distribution Pack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "✏️ Flag for Modification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "❌ Stand Down",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Approval Email": {
+      "main": [
+        [
+          {
+            "node": "Send message and wait for response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Green Info Alert": {
+      "main": [
+        [
+          {
+            "node": "🤖 AI Agent (SBAR Drafter)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✅ Build Distribution Pack": {
+      "main": [
+        [
+          {
+            "node": "🚦 Escalation Tier Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Normal": {
+      "main": [
+        [
+          {
+            "node": "Update audit log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "❌ Stand Down": {
+      "main": [
+        [
+          {
+            "node": "Update audit log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send message and wait for response": {
+      "main": [
+        [
+          {
+            "node": "Merge Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✏️ Flag for Modification": {
+      "main": [
+        [
+          {
+            "node": "Update audit log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🚦 Escalation Tier Router": {
+      "main": [
+        [
+          {
+            "node": "🟠 AMBER Distribution Emails",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "🔴 RED Distribution Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🟠 AMBER Distribution Emails": {
+      "main": [
+        [
+          {
+            "node": "📧 Send AMBER Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📧 Send AMBER Alerts": {
+      "main": [
+        [
+          {
+            "node": "🟠 AMBER Audit Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🟠 AMBER Audit Entry": {
+      "main": [
+        [
+          {
+            "node": "Update audit log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔴 RED Distribution Emails": {
+      "main": [
+        [
+          {
+            "node": "📧 Send RED Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📧 Send RED Alerts": {
+      "main": [
+        [
+          {
+            "node": "🔴 RED Audit Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔴 RED Audit Entry": {
+      "main": [
+        [
+          {
+            "node": "Update audit log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "2d7bf60d-18c3-45ff-95d8-3742fd816cbc",
+  "meta": {
+    "instanceId": "5839a8f654c370edf853c297bad2fc8adbd86e3e8b24fb722ea984f931e56780"
+  },
+  "id": "bo_vs4Tjj29Wf0yAEEm4R",
+  "tags": [
+    {
+      "updatedAt": "2026-02-07T12:53:14.784Z",
+      "createdAt": "2026-02-07T12:53:14.784Z",
+      "id": "JWbzDjvxXX7qTFKB",
+      "name": "Synthelix"
+    },
+    {
+      "updatedAt": "2026-02-07T12:53:14.750Z",
+      "createdAt": "2026-02-07T12:53:14.750Z",
+      "id": "N2lmWFEnSWrhG88H",
+      "name": "GBSH0044"
+    },
+    {
+      "updatedAt": "2026-02-07T13:12:13.011Z",
+      "createdAt": "2026-02-07T13:12:13.011Z",
+      "id": "Rq2fgQJViZPrrqGU",
+      "name": "AI-Agent"
+    }
+  ]
+}

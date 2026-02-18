@@ -1,0 +1,101 @@
+// ============================================================
+// SYNTHELIX — VTP WEBHOOK TEST PAYLOADS
+// ============================================================
+// Use these to test your webhook trigger in n8n.
+// Send via Postman, curl, or n8n's test webhook feature.
+// POST to: http://localhost:5678/webhook-test/vtp-surge
+// ============================================================
+
+
+// ── SCENARIO 1: NORMAL (No alert) ───────────────────────────
+// Quiet evening, well below capacity
+{
+  "timestamp": "2026-02-07T20:00:00Z",
+  "source": "VitaSense_Triage_Pro",
+  "hospital_id": "RWH-001",
+  "predicted_cat1": 0,
+  "predicted_cat2": 2,
+  "predicted_cat3": 8,
+  "predicted_cat4": 5,
+  "predicted_cat5": 3,
+  "predicted_departures": 12,
+  "current_occupancy_pct": 45,
+  "current_patients": 14
+}
+// Expected output: NORMAL (level 0), capacity ratio ~23%
+
+
+// ── SCENARIO 2: GREEN (Elevated awareness) ──────────────────
+// Busy Friday night, approaching threshold
+{
+  "timestamp": "2026-02-07T22:00:00Z",
+  "source": "VitaSense_Triage_Pro",
+  "hospital_id": "RWH-001",
+  "predicted_cat1": 1,
+  "predicted_cat2": 4,
+  "predicted_cat3": 12,
+  "predicted_cat4": 6,
+  "predicted_cat5": 4,
+  "predicted_departures": 8,
+  "current_occupancy_pct": 68,
+  "current_patients": 20
+}
+// Expected output: GREEN (level 1), capacity ratio ~87%
+
+
+// ── SCENARIO 3: AMBER (Active preparation) ──────────────────
+// Winter surge, high volume + high acuity mix
+{
+  "timestamp": "2026-02-07T14:30:00Z",
+  "source": "VitaSense_Triage_Pro",
+  "hospital_id": "RWH-001",
+  "predicted_cat1": 2,
+  "predicted_cat2": 6,
+  "predicted_cat3": 14,
+  "predicted_cat4": 5,
+  "predicted_cat5": 2,
+  "predicted_departures": 8,
+  "current_occupancy_pct": 82,
+  "current_patients": 25
+}
+// Expected output: AMBER (level 2), capacity ratio ~113%
+// Also triggers resus spike (2x Cat 1)
+
+
+// ── SCENARIO 4: RED (Critical surge / Full escalation) ──────
+// Major incident — RTA with multiple casualties predicted
+{
+  "timestamp": "2026-02-07T08:15:00Z",
+  "source": "VitaSense_Triage_Pro",
+  "hospital_id": "RWH-001",
+  "predicted_cat1": 4,
+  "predicted_cat2": 8,
+  "predicted_cat3": 16,
+  "predicted_cat4": 7,
+  "predicted_cat5": 3,
+  "predicted_departures": 6,
+  "current_occupancy_pct": 91,
+  "current_patients": 27
+}
+// Expected output: RED (level 3), capacity ratio ~177%
+// Resus spike active, full escalation required
+
+
+// ── SCENARIO 5: RESUS SPIKE OVERRIDE ────────────────────────
+// Low overall volume BUT 3 Cat 1 patients — auto-bumps to AMBER
+{
+  "timestamp": "2026-02-07T03:00:00Z",
+  "source": "VitaSense_Triage_Pro",
+  "hospital_id": "RWH-001",
+  "predicted_cat1": 3,
+  "predicted_cat2": 2,
+  "predicted_cat3": 4,
+  "predicted_cat4": 2,
+  "predicted_cat5": 1,
+  "predicted_departures": 10,
+  "current_occupancy_pct": 35,
+  "current_patients": 11
+}
+// Expected output: AMBER (level 2) — escalated from GREEN due to resus spike
+// This demonstrates the safety override: even low volume can trigger
+// preparation when high-acuity patients are predicted

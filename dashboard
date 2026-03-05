@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Synthelix — Surge Co-pilot | RWH-001</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@300;400;500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --crimson:    #8B1A1A;
+    --crimson-hi: #CC0000;
+    --crimson-glow: rgba(204,0,0,0.18);
+    --bg:         #0a0a0c;
+    --surface:    #111116;
+    --surface2:   #18181f;
+    --border:     rgba(255,255,255,0.07);
+    --border-hi:  rgba(204,0,0,0.35);
+    --text:       #e8e6e1;
+    --muted:      #6b6876;
+    --green:      #22c55e;
+    --amber:      #f59e0b;
+    --red:        #ef4444;
+    --normal:     #64748b;
+    --font-head:  'Rajdhani', sans-serif;
+    --font-mono:  'JetBrains Mono', monospace;
+    --font-body:  'Inter', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Scanline texture overlay ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+    pointer-events: none; z-index: 0;
+  }
+
+  /* ── Header ── */
+  header {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10,10,12,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border-hi);
+    padding: 0 28px;
+    display: flex; align-items: center; justify-content: space-between;
+    height: 58px;
+  }
+
+  .logo {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .logo-mark {
+    width: 32px; height: 32px;
+    background: var(--crimson-hi);
+    clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+    filter: drop-shadow(0 0 8px rgba(204,0,0,0.6));
+  }
+  .logo-text {
+    font-family: var(--font-head);
+    font-size: 22px; font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #fff;
+  }
+  .logo-text span { color: var(--crimson-hi); }
+
+  .header-meta {
+    display: flex; align-items: center; gap: 24px;
+  }
+  .hospital-id {
+    font-family: var(--font-mono);
+    font-size: 11px; color: var(--muted);
+    letter-spacing: 0.12em;
+  }
+  .live-badge {
+    display: flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--green); letter-spacing: 0.1em;
+  }
+  .live-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%; background: var(--green);
+    animation: pulse-green 2s ease-in-out infinite;
+  }
+  @keyframes pulse-green {
+    0%,100% { opacity: 1; box-shadow: 0 0 4px var(--green); }
+    50%      { opacity: 0.4; box-shadow: none; }
+  }
+
+  .loop-status {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--muted); letter-spacing: 0.08em;
+  }
+  .loop-icon {
+    font-size: 13px;
+    animation: spin-slow 8s linear infinite;
+  }
+  @keyframes spin-slow { to { transform: rotate(360deg); } }
+
+  /* ── Tabs ── */
+  .tabs {
+    display: flex; gap: 0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 28px;
+    position: relative; z-index: 10;
+  }
+  .tab {
+    padding: 14px 22px;
+    font-family: var(--font-head); font-size: 13px; font-weight: 600;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active {
+    color: #fff;
+    border-bottom-color: var(--crimson-hi);
+  }
+  .tab-badge {
+    background: var(--crimson);
+    color: #fff; font-size: 10px;
+    padding: 1px 6px; border-radius: 9px;
+    font-family: var(--font-mono);
+  }
+
+  /* ── Main layout ── */
+  .main { padding: 28px; max-width: 1400px; }
+
+  /* ── Panel cards ── */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+  }
+  .panel-title {
+    font-family: var(--font-head); font-size: 13px; font-weight: 600;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); display: flex; align-items: center; gap: 8px;
+  }
+
+  /* ── Status Grid (Dashboard tab) ── */
+  .status-grid {
+    display: grid; grid-template-columns: 320px 1fr;
+    gap: 16px; margin-bottom: 16px;
+  }
+  .metric-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 12px; margin-bottom: 16px;
+  }
+  .metric-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 5px; padding: 16px;
+    position: relative; overflow: hidden;
+  }
+  .metric-card::after {
+    content: ''; position: absolute;
+    top: 0; left: 0; right: 0; height: 2px;
+    background: var(--crimson);
+  }
+  .metric-label {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--muted); letter-spacing: 0.12em;
+    text-transform: uppercase; margin-bottom: 6px;
+  }
+  .metric-value {
+    font-family: var(--font-head); font-size: 32px;
+    font-weight: 700; color: #fff; line-height: 1;
+  }
+  .metric-sub { font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  /* ── Surge Level Display ── */
+  .surge-display {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 32px 24px; gap: 12px;
+    position: relative; overflow: hidden;
+  }
+  .surge-ring {
+    width: 120px; height: 120px;
+    border-radius: 50%; border: 3px solid currentColor;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column;
+    font-family: var(--font-head);
+    transition: all 0.6s cubic-bezier(0.34,1.56,0.64,1);
+    position: relative;
+  }
+  .surge-ring::before {
+    content: '';
+    position: absolute; inset: -8px;
+    border-radius: 50%; border: 1px solid currentColor;
+    opacity: 0.2;
+    animation: ring-pulse 3s ease-in-out infinite;
+  }
+  @keyframes ring-pulse {
+    0%,100% { transform: scale(1); opacity: 0.2; }
+    50% { transform: scale(1.08); opacity: 0; }
+  }
+  .surge-level-label {
+    font-size: 12px; font-weight: 700; letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .surge-level-value {
+    font-size: 42px; font-weight: 700; line-height: 1;
+  }
+  .surge-tier-name {
+    font-family: var(--font-head); font-size: 18px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+  }
+  .surge-meta {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--muted); text-align: center; letter-spacing: 0.08em;
+  }
+
+  .level-NORMAL  { color: var(--normal); }
+  .level-GREEN   { color: var(--green);  }
+  .level-AMBER   { color: var(--amber);  }
+  .level-RED     { color: var(--red); filter: drop-shadow(0 0 12px rgba(239,68,68,0.5)); }
+
+  .bg-NORMAL { background: rgba(100,116,139,0.06); }
+  .bg-GREEN  { background: rgba(34,197,94,0.06); }
+  .bg-AMBER  { background: rgba(245,158,11,0.08); }
+  .bg-RED    { background: rgba(239,68,68,0.10); }
+
+  /* ── Timeline bar ── */
+  .timeline { display: flex; gap: 3px; padding: 12px 18px; }
+  .timeline-block {
+    flex: 1; height: 28px; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-size: 9px;
+    transition: all 0.3s;
+    cursor: default;
+    opacity: 0.7;
+  }
+  .timeline-block:hover { opacity: 1; transform: scaleY(1.1); }
+  .block-NORMAL { background: var(--normal); }
+  .block-GREEN  { background: var(--green); }
+  .block-AMBER  { background: var(--amber); }
+  .block-RED    { background: var(--red); }
+
+  /* ── Workflow status ── */
+  .workflow-steps {
+    display: flex; align-items: center;
+    padding: 16px 18px; gap: 0;
+    overflow-x: auto;
+  }
+  .wf-step {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 6px; flex-shrink: 0;
+  }
+  .wf-icon {
+    width: 38px; height: 38px;
+    border-radius: 50%; border: 2px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+    background: var(--surface2);
+    transition: all 0.4s;
+  }
+  .wf-icon.active {
+    border-color: var(--crimson-hi);
+    box-shadow: 0 0 12px var(--crimson-glow);
+  }
+  .wf-icon.done { border-color: var(--green); }
+  .wf-label {
+    font-family: var(--font-mono); font-size: 9px;
+    color: var(--muted); letter-spacing: 0.06em;
+    text-align: center; max-width: 60px;
+  }
+  .wf-arrow {
+    width: 32px; height: 2px;
+    background: var(--border); flex-shrink: 0;
+    position: relative; margin-bottom: 16px;
+  }
+  .wf-arrow.active {
+    background: linear-gradient(90deg, var(--crimson), transparent);
+    animation: flow-right 1.2s linear infinite;
+  }
+  .wf-arrow.done { background: var(--green); opacity: 0.4; }
+  @keyframes flow-right {
+    from { background-position: -32px 0; }
+  }
+
+  /* ── Audit Log Tab ── */
+  .audit-controls {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .filter-btn {
+    font-family: var(--font-mono); font-size: 10px;
+    padding: 5px 12px; border-radius: 3px;
+    border: 1px solid var(--border); background: transparent;
+    color: var(--muted); cursor: pointer; letter-spacing: 0.08em;
+    transition: all 0.2s;
+  }
+  .filter-btn:hover { border-color: var(--text); color: var(--text); }
+  .filter-btn.active { background: var(--crimson); border-color: var(--crimson-hi); color: #fff; }
+  .filter-btn.f-GREEN.active  { background: rgba(34,197,94,0.15); border-color: var(--green); color: var(--green); }
+  .filter-btn.f-AMBER.active  { background: rgba(245,158,11,0.15); border-color: var(--amber); color: var(--amber); }
+  .filter-btn.f-RED.active    { background: rgba(239,68,68,0.15); border-color: var(--red); color: var(--red); }
+  .filter-btn.f-NORMAL.active { background: rgba(100,116,139,0.15); border-color: var(--normal); color: var(--normal); }
+
+  .poll-indicator {
+    margin-left: auto; display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono); font-size: 10px; color: var(--muted);
+  }
+  .poll-bar {
+    width: 80px; height: 3px;
+    background: var(--border); border-radius: 2px; overflow: hidden;
+  }
+  .poll-fill {
+    height: 100%; background: var(--crimson-hi);
+    border-radius: 2px;
+    transition: width 1s linear;
+  }
+
+  /* ── Audit Table ── */
+  .audit-table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  thead tr {
+    background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    font-family: var(--font-mono); font-size: 9px;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--muted); padding: 10px 14px;
+    text-align: left; white-space: nowrap;
+  }
+  td {
+    padding: 10px 14px; font-family: var(--font-mono);
+    font-size: 11px; color: var(--text);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    white-space: nowrap;
+  }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+    font-family: var(--font-mono);
+  }
+  .badge-NORMAL  { background: rgba(100,116,139,0.2); color: var(--normal); border: 1px solid rgba(100,116,139,0.3); }
+  .badge-GREEN   { background: rgba(34,197,94,0.15);  color: var(--green);  border: 1px solid rgba(34,197,94,0.3); }
+  .badge-AMBER   { background: rgba(245,158,11,0.15); color: var(--amber);  border: 1px solid rgba(245,158,11,0.3); }
+  .badge-RED     { background: rgba(239,68,68,0.15);  color: var(--red);    border: 1px solid rgba(239,68,68,0.3); }
+
+  .resus-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 2px;
+    font-size: 9px; background: rgba(239,68,68,0.2);
+    color: var(--red); border: 1px solid rgba(239,68,68,0.3);
+    margin-left: 4px;
+  }
+
+  /* ── Empty / Loading state ── */
+  .empty-state {
+    padding: 48px; text-align: center;
+    font-family: var(--font-mono); color: var(--muted); font-size: 12px;
+  }
+  .spinner {
+    display: inline-block; width: 20px; height: 20px;
+    border: 2px solid var(--border); border-top-color: var(--crimson-hi);
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+    margin-bottom: 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Toast notification ── */
+  #toast-container {
+    position: fixed; bottom: 24px; right: 24px;
+    z-index: 9999; display: flex; flex-direction: column; gap: 8px;
+  }
+  .toast {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-left: 3px solid var(--crimson-hi);
+    padding: 10px 16px; border-radius: 4px;
+    font-family: var(--font-mono); font-size: 11px; color: var(--text);
+    max-width: 320px;
+    animation: toast-in 0.3s ease;
+  }
+  .toast.green { border-left-color: var(--green); }
+  .toast.amber { border-left-color: var(--amber); }
+  .toast.red   { border-left-color: var(--red); }
+  @keyframes toast-in { from { opacity:0; transform: translateX(20px); } }
+
+  /* ── Tab panels ── */
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── Config inputs ── */
+  .config-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .config-label { font-family: var(--font-body); font-size: 13px; color: var(--text); }
+  .config-sub   { font-family: var(--font-mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
+  input[type="text"], input[type="number"] {
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); padding: 6px 10px; border-radius: 3px;
+    font-family: var(--font-mono); font-size: 11px;
+    width: 280px; outline: none;
+  }
+  input[type="text"]:focus, input[type="number"]:focus {
+    border-color: var(--crimson-hi);
+  }
+  .save-btn {
+    background: var(--crimson); color: #fff;
+    border: none; padding: 8px 20px; border-radius: 3px;
+    font-family: var(--font-head); font-size: 13px; font-weight: 600;
+    letter-spacing: 0.08em; cursor: pointer; transition: background 0.2s;
+  }
+  .save-btn:hover { background: var(--crimson-hi); }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .status-grid { grid-template-columns: 1fr; }
+    .metric-grid { grid-template-columns: 1fr 1fr; }
+    header { padding: 0 16px; }
+    .main { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══ HEADER ══════════════════════════════════════════ -->
+<header>
+  <div class="logo">
+    <div class="logo-mark"></div>
+    <div class="logo-text">SYNTHE<span>LIX</span></div>
+  </div>
+  <div class="header-meta">
+    <div class="hospital-id">RWH-001 · ROYAL WESTHAMPTON NHS TRUST</div>
+    <div class="loop-status">
+      <span class="loop-icon">⟳</span>
+      <span id="loop-label">AUTO LOOP ACTIVE</span>
+    </div>
+    <div class="live-badge">
+      <div class="live-dot"></div>
+      <span>LIVE</span>
+    </div>
+  </div>
+</header>
+
+<!-- ══ TABS ════════════════════════════════════════════ -->
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('dashboard')">📊 Dashboard</div>
+  <div class="tab" onclick="switchTab('audit')">📋 Audit Log <span class="tab-badge" id="audit-count">0</span></div>
+  <div class="tab" onclick="switchTab('config')">⚙️ Config</div>
+</div>
+
+<!-- ══ MAIN ════════════════════════════════════════════ -->
+<div class="main">
+
+  <!-- ─── DASHBOARD TAB ─────────────────────────────── -->
+  <div class="tab-panel active" id="panel-dashboard">
+
+    <div class="status-grid">
+      <!-- Surge Level -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">🚦 Current Surge Level</div>
+          <div id="last-updated-dash" style="font-family:var(--font-mono);font-size:10px;color:var(--muted);">—</div>
+        </div>
+        <div class="surge-display" id="surge-display">
+          <div class="surge-ring level-NORMAL" id="surge-ring">
+            <div class="surge-level-label">LEVEL</div>
+            <div class="surge-level-value" id="surge-level-num">0</div>
+          </div>
+          <div class="surge-tier-name level-NORMAL" id="surge-tier-name">NORMAL</div>
+          <div class="surge-meta" id="surge-meta">Awaiting first cycle...</div>
+        </div>
+      </div>
+
+      <!-- Right metrics -->
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div class="metric-grid">
+          <div class="metric-card">
+            <div class="metric-label">Capacity Ratio</div>
+            <div class="metric-value" id="m-capacity">—</div>
+            <div class="metric-sub" id="m-capacity-sub">% of staffed</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Weighted Load</div>
+            <div class="metric-value" id="m-wload">—</div>
+            <div class="metric-sub">acuity-adjusted pts</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Cat 1 Arrivals</div>
+            <div class="metric-value" id="m-cat1" style="color:var(--red)">—</div>
+            <div class="metric-sub">immediate / resus</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Action Taken</div>
+            <div class="metric-value" style="font-size:18px;margin-top:4px" id="m-action">—</div>
+            <div class="metric-sub" id="m-approved">—</div>
+          </div>
+        </div>
+
+        <!-- Workflow progress -->
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">⚡ Workflow Pipeline</div>
+            <div id="wf-status" style="font-family:var(--font-mono);font-size:10px;color:var(--muted);">IDLE</div>
+          </div>
+          <div class="workflow-steps" id="wf-steps">
+            <div class="wf-step"><div class="wf-icon" id="wf-0">🎲</div><div class="wf-label">SCENARIO GEN</div></div>
+            <div class="wf-arrow" id="wfa-0"></div>
+            <div class="wf-step"><div class="wf-icon" id="wf-1">⚖️</div><div class="wf-label">TIERING</div></div>
+            <div class="wf-arrow" id="wfa-1"></div>
+            <div class="wf-step"><div class="wf-icon" id="wf-2">🤖</div><div class="wf-label">SBAR DRAFT</div></div>
+            <div class="wf-arrow" id="wfa-2"></div>
+            <div class="wf-step"><div class="wf-icon" id="wf-3">✅</div><div class="wf-label">APPROVAL</div></div>
+            <div class="wf-arrow" id="wfa-3"></div>
+            <div class="wf-step"><div class="wf-icon" id="wf-4">📧</div><div class="wf-label">EMAIL ALERTS</div></div>
+            <div class="wf-arrow" id="wfa-4"></div>
+            <div class="wf-step"><div class="wf-icon" id="wf-5">📋</div><div class="wf-label">AUDIT LOG</div></div>
+            <div class="wf-arrow" id="wfa-5"></div>
+            <div class="wf-step"><div class="wf-icon" id="wf-6">🔄</div><div class="wf-label">DASHBOARD</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Surge Timeline -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">📈 Surge History Timeline</div>
+        <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);">Last 20 cycles</div>
+      </div>
+      <div class="timeline" id="timeline-bar">
+        <!-- filled by JS -->
+      </div>
+    </div>
+
+  </div><!-- /dashboard tab -->
+
+
+  <!-- ─── AUDIT LOG TAB ──────────────────────────────── -->
+  <div class="tab-panel" id="panel-audit">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">📋 Audit Log — Auto-Sync Feed</div>
+        <div class="poll-indicator">
+          <span id="poll-label">Next refresh in <span id="poll-countdown">30</span>s</span>
+          <div class="poll-bar"><div class="poll-fill" id="poll-fill" style="width:100%"></div></div>
+          <button class="filter-btn" onclick="refreshAuditLog()" style="padding:3px 10px;margin-left:4px;">↺ Now</button>
+        </div>
+      </div>
+      <div class="audit-controls" id="filter-controls">
+        <span style="font-family:var(--font-mono);font-size:10px;color:var(--muted);letter-spacing:0.1em;">FILTER:</span>
+        <button class="filter-btn active" onclick="setFilter('ALL')" data-f="ALL">ALL</button>
+        <button class="filter-btn f-NORMAL" onclick="setFilter('NORMAL')" data-f="NORMAL">NORMAL</button>
+        <button class="filter-btn f-GREEN" onclick="setFilter('GREEN')" data-f="GREEN">GREEN</button>
+        <button class="filter-btn f-AMBER" onclick="setFilter('AMBER')" data-f="AMBER">AMBER</button>
+        <button class="filter-btn f-RED" onclick="setFilter('RED')" data-f="RED">RED</button>
+      </div>
+      <div class="audit-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Event ID</th>
+              <th>Surge Level</th>
+              <th>Capacity %</th>
+              <th>Wtd Load</th>
+              <th>Cat 1</th>
+              <th>Action</th>
+              <th>Recipients</th>
+              <th>Approved By</th>
+              <th>Response (s)</th>
+            </tr>
+          </thead>
+          <tbody id="audit-tbody">
+            <tr><td colspan="10">
+              <div class="empty-state">
+                <div class="spinner"></div><br>
+                Connecting to audit feed...
+              </div>
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div><!-- /audit tab -->
+
+
+  <!-- ─── CONFIG TAB ─────────────────────────────────── -->
+  <div class="tab-panel" id="panel-config">
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="panel-header">
+        <div class="panel-title">⚙️ n8n Integration Settings</div>
+      </div>
+      <div class="config-row">
+        <div>
+          <div class="config-label">n8n Base URL</div>
+          <div class="config-sub">Your n8n cloud instance</div>
+        </div>
+        <input type="text" id="cfg-base-url" value="https://gbsh0044team8.app.n8n.cloud" />
+      </div>
+      <div class="config-row">
+        <div>
+          <div class="config-label">Audit Feed Webhook Path</div>
+          <div class="config-sub">GET endpoint returning JSON audit entries</div>
+        </div>
+        <input type="text" id="cfg-feed-path" value="/webhook/audit-log-feed" />
+      </div>
+      <div class="config-row">
+        <div>
+          <div class="config-label">Poll Interval (seconds)</div>
+          <div class="config-sub">How often the dashboard syncs with n8n</div>
+        </div>
+        <input type="number" id="cfg-interval" value="30" min="10" max="300" style="width:120px;" />
+      </div>
+      <div class="config-row" style="border-bottom:none;justify-content:flex-end;">
+        <button class="save-btn" onclick="saveConfig()">Save & Apply</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">🔌 Connection Status</div>
+      </div>
+      <div style="padding:20px 18px;">
+        <div id="conn-status" style="font-family:var(--font-mono);font-size:12px;color:var(--muted);">
+          Press "Test Connection" to verify the audit feed endpoint is reachable.
+        </div>
+        <button class="save-btn" style="margin-top:12px;" onclick="testConnection()">Test Connection</button>
+      </div>
+    </div>
+  </div><!-- /config tab -->
+
+</div><!-- /main -->
+
+<!-- ── Toast container ── -->
+<div id="toast-container"></div>
+
+<script>
+// ════════════════════════════════════════════════════
+// SYNTHELIX DASHBOARD v4 — Closed-Loop Engine
+// ════════════════════════════════════════════════════
+
+// ── Config (editable via Config tab) ──────────────
+let CFG = {
+  baseUrl:   'https://gbsh0044team8.app.n8n.cloud',
+  feedPath:  '/webhook/audit-log-feed',
+  interval:  30,  // seconds
+};
+
+// ── State ─────────────────────────────────────────
+let allEntries       = [];
+let activeFilter     = 'ALL';
+let pollTimer        = null;
+let countdownTimer   = null;
+let pollSecondsLeft  = CFG.interval;
+let timelineHistory  = [];
+
+// ── Tab switching ─────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach((t,i) => {
+    t.classList.toggle('active', ['dashboard','audit','config'][i] === tab);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + tab).classList.add('active');
+
+  if (tab === 'audit') {
+    // Refresh immediately when switching to audit
+    refreshAuditLog();
+  }
+}
+
+// ── Fetch audit log from n8n ─────────────────────
+async function refreshAuditLog() {
+  const url = CFG.baseUrl + CFG.feedPath;
+  try {
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+      cache: 'no-cache',
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+
+    // n8n returns array or {entries:[...]}
+    const entries = Array.isArray(data) ? data :
+                    (data.entries ? data.entries :
+                    (data[0] ? data[0].entries || data : []));
+
+    processEntries(entries);
+    document.getElementById('poll-label').innerHTML = `Next refresh in <span id="poll-countdown">${CFG.interval}</span>s`;
+
+  } catch(err) {
+    console.warn('Audit feed fetch failed:', err.message);
+    // Fall back to demo data if n8n not yet reachable
+    if (allEntries.length === 0) injectDemoEntries();
+    showToast(`Feed offline: ${err.message}`, 'warn');
+  }
+  resetCountdown();
+}
+
+// ── Process and render entries ────────────────────
+function processEntries(entries) {
+  if (!entries || !entries.length) return;
+
+  // Detect new entries vs existing
+  const prevIds = new Set(allEntries.map(e => e.event_id || e.Event_ID || e.timestamp));
+  const newEntries = entries.filter(e => !prevIds.has(e.event_id || e.Event_ID || e.timestamp));
+
+  allEntries = entries;
+
+  renderAuditTable();
+  updateDashboardFromLatest();
+
+  // Notify for new entries
+  newEntries.forEach(e => {
+    const level = e.surge_level || e.Surge_Level || 'NORMAL';
+    const ts = formatTime(e.timestamp || e.Timestamp);
+    showToast(`New entry: ${level} at ${ts}`, level.toLowerCase());
+  });
+
+  // Update badge count
+  document.getElementById('audit-count').textContent = entries.length;
+}
+
+// ── Render audit table ────────────────────────────
+function renderAuditTable() {
+  const tbody = document.getElementById('audit-tbody');
+  const filtered = activeFilter === 'ALL'
+    ? allEntries
+    : allEntries.filter(e => (e.surge_level || e.Surge_Level || '').toUpperCase() === activeFilter);
+
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="10"><div class="empty-state">No entries match filter "${activeFilter}"</div></td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(e => {
+    const level    = (e.surge_level || e.Surge_Level || 'NORMAL').toUpperCase();
+    const ts       = formatTime(e.timestamp || e.Timestamp);
+    const eid      = (e.event_id || e.Event_ID || '').slice(0, 12) + '…';
+    const cap      = (e.capacity_pct || e.Capacity_Percentage || 0);
+    const wl       = (e.weighted_load || e.Weighted_Patient_Load || 0);
+    const cat1     = (e.cat1 || e.Cat1_Count || 0);
+    const action   = (e.action_taken || e.Action_Taken || '—');
+    const recip    = (e.recipients || e.Recipients || '—').replace(/,/g, ', ');
+    const approver = (e.approved_by || e.Approved_By || '—');
+    const resp     = (e.response_time || e.response_time_s || e.Response_Time_Seconds || '—');
+    const resus    = e.resus_spike || e.Resus_Override === 'true' || e.Resus_Override === true;
+
+    return `<tr>
+      <td>${ts}</td>
+      <td style="color:var(--muted)">${eid}</td>
+      <td>
+        <span class="badge badge-${level}">${level}</span>
+        ${resus ? '<span class="resus-tag">RESUS</span>' : ''}
+      </td>
+      <td>${typeof cap === 'number' ? cap.toFixed(1)+'%' : cap+'%'}</td>
+      <td>${wl}</td>
+      <td style="color:${cat1 >= 3 ? 'var(--red)' : 'inherit'}">${cat1}</td>
+      <td style="font-size:10px">${action}</td>
+      <td style="font-size:10px;max-width:160px;overflow:hidden;text-overflow:ellipsis">${recip}</td>
+      <td>${approver}</td>
+      <td>${resp !== '—' ? resp+'s' : '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Update dashboard from latest entry ───────────
+function updateDashboardFromLatest() {
+  if (!allEntries.length) return;
+  const latest = allEntries[0]; // newest first
+
+  const level  = (latest.surge_level || latest.Surge_Level || 'NORMAL').toUpperCase();
+  const cap    = parseFloat(latest.capacity_pct || latest.Capacity_Percentage || 0);
+  const wl     = parseFloat(latest.weighted_load || latest.Weighted_Patient_Load || 0);
+  const cat1   = parseInt(latest.cat1 || latest.Cat1_Count || 0);
+  const action = latest.action_taken || latest.Action_Taken || '—';
+  const approver = latest.approved_by || latest.Approved_By || '';
+  const ts     = formatTime(latest.timestamp || latest.Timestamp);
+
+  // Surge ring
+  const ring = document.getElementById('surge-ring');
+  const tierName = document.getElementById('surge-tier-name');
+  const levelNum = document.getElementById('surge-level-num');
+  const meta = document.getElementById('surge-meta');
+
+  ring.className = `surge-ring level-${level}`;
+  tierName.className = `surge-tier-name level-${level}`;
+  tierName.textContent = level;
+  levelNum.textContent = {NORMAL:0, GREEN:1, AMBER:2, RED:3}[level] ?? 0;
+  meta.textContent = `Cap: ${cap.toFixed(0)}% · Cat1: ${cat1} · ${ts}`;
+  document.getElementById('surge-display').className = `surge-display bg-${level}`;
+
+  document.getElementById('m-capacity').textContent = cap.toFixed(1) + '%';
+  document.getElementById('m-wload').textContent = wl.toFixed(1);
+  document.getElementById('m-cat1').textContent = cat1;
+  document.getElementById('m-action').textContent = action.replace('_', ' ');
+  document.getElementById('m-approved').textContent = approver ? `By: ${approver}` : 'Pending / Auto';
+  document.getElementById('last-updated-dash').textContent = ts;
+
+  // Update timeline
+  timelineHistory.unshift(level);
+  if (timelineHistory.length > 20) timelineHistory = timelineHistory.slice(0, 20);
+  renderTimeline();
+
+  // Animate workflow steps as "done"
+  animateWorkflow(level);
+}
+
+// ── Timeline renderer ─────────────────────────────
+function renderTimeline() {
+  const bar = document.getElementById('timeline-bar');
+  // Show last 20, fill empty slots
+  const slots = [...Array(20)].map((_,i) => timelineHistory[i] || null);
+  bar.innerHTML = slots.map((level, i) => level
+    ? `<div class="timeline-block block-${level}" title="${level}">${level[0]}</div>`
+    : `<div class="timeline-block" style="background:rgba(255,255,255,0.04)"></div>`
+  ).join('');
+}
+
+// ── Workflow pipeline animation ───────────────────
+function animateWorkflow(level) {
+  document.getElementById('wf-status').textContent = 'COMPLETE';
+  for (let i = 0; i <= 6; i++) {
+    const el = document.getElementById('wf-' + i);
+    if (el) { el.classList.remove('active'); el.classList.add('done'); }
+  }
+  for (let i = 0; i <= 5; i++) {
+    const el = document.getElementById('wfa-' + i);
+    if (el) { el.classList.remove('active'); el.classList.add('done'); }
+  }
+  // Reset after 3s
+  setTimeout(() => {
+    document.getElementById('wf-status').textContent = 'IDLE';
+    for (let i = 0; i <= 6; i++) {
+      const el = document.getElementById('wf-' + i);
+      if (el) el.classList.remove('done', 'active');
+    }
+    for (let i = 0; i <= 5; i++) {
+      const el = document.getElementById('wfa-' + i);
+      if (el) el.classList.remove('done', 'active');
+    }
+  }, 3000);
+}
+
+// ── Countdown / poll timer ────────────────────────
+function resetCountdown() {
+  pollSecondsLeft = CFG.interval;
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = setInterval(() => {
+    pollSecondsLeft--;
+    const el = document.getElementById('poll-countdown');
+    if (el) el.textContent = Math.max(0, pollSecondsLeft);
+    const fill = document.getElementById('poll-fill');
+    if (fill) fill.style.width = ((pollSecondsLeft / CFG.interval) * 100) + '%';
+    if (pollSecondsLeft <= 0) {
+      clearInterval(countdownTimer);
+      refreshAuditLog();
+    }
+  }, 1000);
+}
+
+// ── Filter controls ───────────────────────────────
+function setFilter(f) {
+  activeFilter = f;
+  document.querySelectorAll('[data-f]').forEach(b => {
+    b.classList.toggle('active', b.dataset.f === f);
+  });
+  renderAuditTable();
+}
+
+// ── Toast notifications ───────────────────────────
+function showToast(msg, type = 'info') {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type === 'green' ? 'green' : type === 'amber' ? 'amber' : type === 'red' ? 'red' : ''}`;
+  toast.textContent = msg;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
+}
+
+// ── Config save ───────────────────────────────────
+function saveConfig() {
+  CFG.baseUrl  = document.getElementById('cfg-base-url').value.trim().replace(/\/$/, '');
+  CFG.feedPath = document.getElementById('cfg-feed-path').value.trim();
+  CFG.interval = parseInt(document.getElementById('cfg-interval').value) || 30;
+  if (pollTimer) clearInterval(pollTimer);
+  resetCountdown();
+  showToast('Config saved. Polling at ' + CFG.interval + 's intervals.', 'green');
+}
+
+// ── Test connection ───────────────────────────────
+async function testConnection() {
+  const url = CFG.baseUrl + CFG.feedPath;
+  const statusEl = document.getElementById('conn-status');
+  statusEl.style.color = 'var(--muted)';
+  statusEl.textContent = `Testing ${url}…`;
+  try {
+    const resp = await fetch(url, { method: 'GET', cache: 'no-cache' });
+    if (resp.ok) {
+      statusEl.style.color = 'var(--green)';
+      statusEl.textContent = `✅ Connected — HTTP ${resp.status} from ${url}`;
+      showToast('Feed endpoint reachable', 'green');
+    } else {
+      statusEl.style.color = 'var(--amber)';
+      statusEl.textContent = `⚠️ HTTP ${resp.status} — check n8n workflow is active`;
+    }
+  } catch (err) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = `❌ ${err.message} — check CORS settings and URL`;
+    showToast('Connection failed: ' + err.message, 'red');
+  }
+}
+
+// ── Format timestamp ──────────────────────────────
+function formatTime(ts) {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts);
+    return d.toLocaleDateString('en-GB', {day:'2-digit',month:'short'}) + ' ' +
+           d.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  } catch { return ts; }
+}
+
+// ── Demo / fallback entries (shown if n8n offline) ─
+function injectDemoEntries() {
+  const now = new Date();
+  const mk = (minsAgo, level, cap, wl, cat1, action, recip, approver, resp, resus) => ({
+    timestamp: new Date(now - minsAgo * 60000).toISOString(),
+    event_id: 'demo-' + Math.random().toString(36).slice(2,10),
+    surge_level: level,
+    capacity_pct: cap,
+    weighted_load: wl,
+    cat1,
+    action_taken: action,
+    recipients: recip,
+    approved_by: approver,
+    response_time: resp,
+    resus_spike: resus,
+  });
+
+  allEntries = [
+    mk(0,  'RED',    177, 31.5, 4, 'ESCALATION_DISTRIBUTED', 'ED Charge Nurse, ICU Lead, Bed Manager, On-Call Consultant', 'Charge Nurse K. Osei', 142, false),
+    mk(15, 'AMBER',  113, 23.2, 2, 'ESCALATION_DISTRIBUTED', 'ED Charge Nurse, Bed Manager', 'Charge Nurse K. Osei', 87, false),
+    mk(30, 'AMBER',   95, 18.1, 3, 'ESCALATION_DISTRIBUTED', 'ED Charge Nurse, Bed Manager', 'Charge Nurse T. Patel', 93, true),
+    mk(45, 'GREEN',   87,  9.4, 1, 'INFO_ALERT',             'ED Charge Nurse', '', 0, false),
+    mk(60, 'NORMAL',  23,  2.1, 0, 'LOGGED',                 '', '', 0, false),
+    mk(75, 'GREEN',   82,  8.6, 1, 'INFO_ALERT',             'ED Charge Nurse', '', 0, false),
+    mk(90, 'NORMAL',  31,  3.0, 0, 'LOGGED',                 '', '', 0, false),
+  ];
+  renderAuditTable();
+  updateDashboardFromLatest();
+  document.getElementById('audit-count').textContent = allEntries.length;
+  showToast('Demo mode — connect n8n to see live data', 'info');
+}
+
+// ── Init ──────────────────────────────────────────
+(function init() {
+  renderTimeline();
+  refreshAuditLog();
+  // Set up recurring poll timer (backup)
+  pollTimer = setInterval(refreshAuditLog, CFG.interval * 1000);
+})();
+</script>
+</body>
+</html>

@@ -23,24 +23,28 @@
   "current_patients": 14
 }
 // Expected output: NORMAL (level 0), capacity ratio ~23%
+// weighted_load=10.9, net_pressure=-1.1 → well under threshold
 
 
 // ── SCENARIO 2: GREEN (Elevated awareness) ──────────────────
-// Busy Friday night, approaching threshold
+// Busy Friday night — elevated but below AMBER threshold
+// FIX: previous payload only produced 64% (NORMAL). This payload
+// correctly lands in the GREEN band (80–90%).
 {
   "timestamp": "2026-02-07T22:00:00Z",
   "source": "VitaSense_Triage_Pro",
   "hospital_id": "RWH-001",
   "predicted_cat1": 1,
-  "predicted_cat2": 4,
-  "predicted_cat3": 12,
-  "predicted_cat4": 6,
-  "predicted_cat5": 4,
-  "predicted_departures": 3,       
-  "current_occupancy_pct": 68,
-  "current_patients": 20
+  "predicted_cat2": 5,
+  "predicted_cat3": 14,
+  "predicted_cat4": 4,
+  "predicted_cat5": 3,
+  "predicted_departures": 4,
+  "current_occupancy_pct": 72,
+  "current_patients": 22
 }
-// Expected output: GREEN (level 1), capacity ratio ~87%
+// Expected output: GREEN (level 1), capacity ratio ~86%
+// weighted_load=29.9, net_pressure=25.9, no resus spike (cat1=1 < threshold of 2)
 
 
 // ── SCENARIO 3: AMBER (Active preparation) ──────────────────
@@ -59,7 +63,7 @@
   "current_patients": 25
 }
 // Expected output: AMBER (level 2), capacity ratio ~113%
-// Also triggers resus spike (2x Cat 1)
+// Also triggers resus spike (cat1=2 meets threshold)
 
 
 // ── SCENARIO 4: RED (Critical surge / Full escalation) ──────
@@ -97,5 +101,4 @@
   "current_patients": 11
 }
 // Expected output: AMBER (level 2) — escalated from GREEN due to resus spike
-// This demonstrates the safety override: even low volume can trigger
-// preparation when high-acuity patients are predicted
+// Demonstrates safety override: high-acuity patients override low overall volume
